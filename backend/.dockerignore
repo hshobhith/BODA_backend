@@ -1,0 +1,10 @@
+node_modules
+dist
+uploads
+private-uploads
+.env
+.env.*.local
+*.log
+coverage
+.git
+.devdata
