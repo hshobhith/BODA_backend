@@ -8,7 +8,7 @@ const NOMINATIM_BASE_URL = 'https://nominatim.openstreetmap.org';
 // calls this backend proxy instead of Nominatim directly (that also sidesteps
 // Nominatim not returning CORS headers, which silently broke the browser
 // fetch entirely: requests never failed with a 4xx, they just never resolved).
-const USER_AGENT = 'BODA-Marketplace/1.0 (contact: support@boda.local)';
+const USER_AGENT = 'BODA-Marketplace/1.0 (contact: contactus@bodaborcha.in)';
 
 @Injectable()
 export class GeocodingService {

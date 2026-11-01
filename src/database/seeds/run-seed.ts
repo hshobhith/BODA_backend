@@ -107,7 +107,9 @@ async function getOrCreateCategory(
   const category = categoryRepo.create({
     name: data.name,
     slug: data.slug,
-    imageUrl: picsum(data.slug, 400, 300),
+    // No image: the frontend shows a bundled photo for each seeded slug
+    // (frontend/public/categories/<slug>.jpg); admins can set their own.
+    imageUrl: null,
     parentId: data.parentId ?? null,
     sortOrder: data.sortOrder ?? 0,
     isActive: true,

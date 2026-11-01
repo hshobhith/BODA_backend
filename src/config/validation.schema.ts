@@ -63,14 +63,14 @@ export const validationSchema = Joi.object({
   // Inbox that receives contact-form messages (POST /contact)
   SUPPORT_EMAIL: Joi.string()
     .email({ tlds: { allow: false } })
-    .default('support@boda.local'),
+    .default('contactus@bodaborcha.in'),
 
   // Google sign-in: OAuth 2.0 Web client ID from Google Cloud Console. Must be
   // the same ID the frontend uses (NEXT_PUBLIC_GOOGLE_CLIENT_ID). Optional so
   // the API still boots without it; POST /auth/google then answers 503.
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   OPEN_FOOD_FACTS_BASE_URL: Joi.string().uri().default('https://world.openfoodfacts.org'),
-  OPEN_FOOD_FACTS_USER_AGENT: Joi.string().default('BODA/1.0 (support@boda.local)'),
+  OPEN_FOOD_FACTS_USER_AGENT: Joi.string().default('BODA/1.0 (contactus@bodaborcha.in)'),
 
   // Throttle
   THROTTLE_TTL: Joi.number().default(60),

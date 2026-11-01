@@ -25,7 +25,8 @@ export class ContactService {
    * Nothing is persisted — support ticketing is a Phase 2 item.
    */
   async submit(dto: CreateContactMessageDto): Promise<void> {
-    const supportEmail = this.configService.get<string>('app.supportEmail') ?? 'support@boda.local';
+    const supportEmail =
+      this.configService.get<string>('app.supportEmail') ?? 'contactus@bodaborcha.in';
     const topic = TOPIC_LABELS[dto.topic];
     const subject = `[Contact] ${topic}${dto.orderNumber ? ` — order ${dto.orderNumber}` : ''}`;
 
