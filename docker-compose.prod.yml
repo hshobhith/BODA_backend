@@ -1,6 +1,10 @@
-# Production stack for a single VPS: API + Postgres + Redis behind Caddy (auto HTTPS).
+# Production stack for a single VPS: API + Redis behind Caddy (auto HTTPS).
 #
+# With a managed database (DATABASE_URL set in .env.production):
 #   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# With Postgres running on this server too, add the db file:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.db.yml --env-file .env.production up -d --build
 #
 # --env-file is required: Compose reads it both for ${...} substitution below and,
 # via env_file, as the backend's runtime environment. See DEPLOY.md.
@@ -22,9 +26,6 @@ services:
     environment:
       NODE_ENV: production
       TRUST_PROXY: "true"
-      # Ignored when DATABASE_URL is set (e.g. a managed database).
-      DB_HOST: postgres
-      DB_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
       # Keep the V8 heap inside the container limit so Node GCs instead of being OOM-killed.
@@ -36,36 +37,8 @@ services:
     expose:
       - "4000"
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-    mem_limit: 768m
-    logging: *logging
-
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USERNAME:?set DB_USERNAME in .env.production}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env.production}
-      POSTGRES_DB: ${DB_NAME:?set DB_NAME in .env.production}
-      TZ: Asia/Kolkata
-    # Sized for a 2–4 GB VPS shared with the API and Redis.
-    command: >
-      postgres
-      -c shared_buffers=128MB
-      -c effective_cache_size=512MB
-      -c work_mem=4MB
-      -c maintenance_work_mem=64MB
-      -c max_connections=50
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
     mem_limit: 768m
     logging: *logging
 
@@ -110,7 +83,6 @@ services:
     logging: *logging
 
 volumes:
-  postgres_data:
   redis_data:
   uploads:
   private_uploads:

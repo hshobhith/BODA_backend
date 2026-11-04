@@ -8,7 +8,8 @@ Files involved:
 | File | Purpose |
 |---|---|
 | `Dockerfile` | Builds the API image; runs pending migrations on start, has a healthcheck |
-| `docker-compose.prod.yml` | API + Postgres + Redis + Caddy, with memory limits and log rotation |
+| `docker-compose.prod.yml` | API + Redis + Caddy, with memory limits and log rotation (uses `DATABASE_URL`) |
+| `docker-compose.db.yml` | Optional: adds Postgres on the same server; add `-f docker-compose.db.yml` to every command |
 | `Caddyfile` | Reverse proxy and HTTPS for `API_DOMAIN` (WebSockets included) |
 | `.env.production.example` | Template for the server's `.env.production` |
 | `scripts/backup-db.sh` | Daily `pg_dump`, keeps 14 days |
@@ -81,7 +82,10 @@ dc up -d --build backend        # rebuilds the API only; DB and Redis keep runni
 dc logs -f backend
 ```
 
-## 5. Backups
+## 5. Backups (only with docker-compose.db.yml)
+
+A managed database (Prisma Postgres, Neon, etc.) is backed up by the provider. The script
+below is for Postgres running on this server; add `-f docker-compose.db.yml` to its compose command.
 
 ```bash
 crontab -e
