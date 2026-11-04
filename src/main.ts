@@ -13,6 +13,17 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
 
+  // Behind a reverse proxy (Caddy/Nginx/Render) every request arrives from the
+  // proxy's IP; trusting one hop makes req.ip the real client again, which the
+  // rate limiter keys on. Leave off when the API is exposed directly, or
+  // clients could spoof X-Forwarded-For.
+  if (configService.get<boolean>('app.trustProxy')) {
+    app.set('trust proxy', 1);
+  }
+
+  // Close DB/Redis/socket connections cleanly on `docker stop` (SIGTERM).
+  app.enableShutdownHooks();
+
   app.use(helmet());
   app.use(compression());
 

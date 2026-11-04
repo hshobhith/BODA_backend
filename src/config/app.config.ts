@@ -9,6 +9,7 @@ export default registerAs('app', () => ({
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
+  trustProxy: (process.env.TRUST_PROXY || 'false') === 'true',
   uploadDir: process.env.UPLOAD_DIR || './uploads',
   storageDriver: (process.env.STORAGE_DRIVER || 'local') as 'local' | 's3',
   throttleTtl: parseInt(process.env.THROTTLE_TTL || '60', 10),

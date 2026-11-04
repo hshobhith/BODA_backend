@@ -14,6 +14,8 @@ export const validationSchema = Joi.object({
   API_PREFIX: Joi.string().default('api/v1'),
   FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
   CORS_ORIGINS: Joi.string().default('http://localhost:3000'),
+  // true only when a reverse proxy sits in front (see main.ts)
+  TRUST_PROXY: Joi.boolean().default(false),
 
   // Database: either one DATABASE_URL (cloud providers) or the separate DB_* parts.
   DATABASE_URL: Joi.string()

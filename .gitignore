@@ -7,3 +7,5 @@ private-uploads/
 *.log
 coverage/
 .DS_Store
+.env.production
+backups/

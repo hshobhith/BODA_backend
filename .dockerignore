@@ -8,3 +8,9 @@ private-uploads
 coverage
 .git
 .devdata
+.env.production
+docker-compose*.yml
+Caddyfile
+DEPLOY.md
+scripts
+backups
