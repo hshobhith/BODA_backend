@@ -163,6 +163,20 @@ export class StoresController {
     return this.storesService.setStatus(store.id, user.id, dto.status);
   }
 
+  @Roles(Role.SELLER)
+  @ApiBearerAuth()
+  @Post('me/store/resubmit')
+  @ApiOperation({ summary: 'Send a rejected store back to the admin approval queue' })
+  @ApiResponse({ status: 201, description: 'Store is pending approval again' })
+  @ApiResponse({ status: 400, description: 'Only a rejected store can be resubmitted' })
+  async resubmitMyStore(
+    @CurrentUser() user: CurrentUserPayload,
+    @Query('storeId') storeId?: string,
+  ) {
+    const store = await this.resolveMineStore(user, storeId);
+    return this.storesService.resubmit(store.id, user.id);
+  }
+
   // -----------------------------------------------------------------
   // Public single-store lookup — must stay last so it doesn't shadow
   // the routes above.

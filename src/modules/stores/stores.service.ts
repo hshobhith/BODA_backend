@@ -96,8 +96,8 @@ export class StoresService {
     return created;
   }
 
-  /** One-line summary for the admin "new store" alert. */
-  private describeNewStore(store: Store): string {
+  /** One-line summary for the admin "store waiting for approval" alert. */
+  private describeNewStore(store: Store, action: 'registered' | 'updated' = 'registered'): string {
     const typeLabel: Record<StoreType, string> = {
       [StoreType.RETAIL]: 'Shop',
       [StoreType.RESTAURANT]: 'Restaurant',
@@ -107,7 +107,7 @@ export class StoresService {
     const contact = [store.phone, store.email].filter(Boolean).join(' · ');
     const what = place ? `${typeLabel[store.storeType]} in ${place}` : typeLabel[store.storeType];
     return [
-      `${what} has been registered and is waiting for your review.`,
+      `${what} has been ${action} and is waiting for your review.`,
       contact && `Contact: ${contact}.`,
     ]
       .filter(Boolean)
@@ -187,6 +187,36 @@ export class StoresService {
     // existing links; sellers needing a new slug should contact support.
     Object.assign(store, dto);
     return this.storesRepository.save(store);
+  }
+
+  /**
+   * A rejected store goes back to `pending` once the seller has fixed what the
+   * admin asked for, and admins are alerted the same way as for a new store.
+   * Suspended stores can't use this — lifting a suspension is a support matter.
+   */
+  async resubmit(id: string, sellerId: string): Promise<Store> {
+    const store = await this.findOwnedById(id, sellerId);
+    if (store.approvalStatus !== StoreApprovalStatus.REJECTED) {
+      throw new BadRequestException('Only a rejected store can be sent for approval again.');
+    }
+    const previousReason = store.rejectionReason;
+    store.approvalStatus = StoreApprovalStatus.PENDING;
+    store.rejectionReason = null;
+    const saved = await this.storesRepository.save(store);
+
+    void this.notificationsService.notifyAdmins({
+      type: STORE_SUBMITTED_NOTIFICATION,
+      title: `Store resubmitted for approval: ${saved.name}`,
+      body: [
+        this.describeNewStore(saved, 'updated'),
+        previousReason && `It was previously rejected for: “${previousReason}”.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
+      metadata: { storeId: saved.id, sellerId },
+    });
+
+    return saved;
   }
 
   /** Restaurants need an FSSAI licence and pharmacies a drug licence to trade. */
