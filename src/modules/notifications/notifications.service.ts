@@ -2,12 +2,16 @@ import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nest
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Role } from '../../common/enums/role.enum';
 import { PaginatedResult, paginate } from '../../common/utils/paginate.util';
-import { User } from '../auth/entities/user.entity';
+import { User, UserStatus } from '../auth/entities/user.entity';
 import { MailService } from '../mail/mail.service';
 import { renderNotificationEmail } from '../mail/templates/notification-email';
 import { Notification, NotificationChannel } from './entities/notification.entity';
 import { NotificationsGateway } from './notifications.gateway';
+
+/** Sent to admins when a seller creates a store that needs approval. */
+export const STORE_SUBMITTED_NOTIFICATION = 'store.submitted';
 
 export interface CreateNotificationDto {
   type: string;
@@ -51,6 +55,33 @@ export class NotificationsService {
     return saved;
   }
 
+  /**
+   * Notifies every active admin (bell + email copy, same as `notify`), and also
+   * emails the support inbox (`SUPPORT_EMAIL`) unless an admin already uses it,
+   * so platform alerts reach a real, monitored mailbox even when the admin
+   * accounts' own addresses aren't checked. Never throws.
+   */
+  async notifyAdmins(dto: CreateNotificationDto): Promise<void> {
+    try {
+      const admins = await this.usersRepository.find({
+        where: { role: Role.ADMIN, status: UserStatus.ACTIVE },
+        select: { id: true, email: true },
+      });
+      for (const admin of admins) {
+        await this.notify(admin.id, dto);
+      }
+
+      const supportEmail = this.configService.get<string>('app.supportEmail');
+      const adminEmails = new Set(admins.map((admin) => admin.email.toLowerCase()));
+      if (supportEmail && !adminEmails.has(supportEmail.toLowerCase())) {
+        const html = this.renderEmail('BODA team', dto);
+        await this.mailService.send(supportEmail, dto.title, html);
+      }
+    } catch (err) {
+      this.logger.error(`Failed to notify admins (${dto.type})`, err as Error);
+    }
+  }
+
   /** Emails the recipient the same title, body and link they see under the bell. */
   private async sendEmailCopy(userId: string, notification: Notification): Promise<void> {
     try {
@@ -62,24 +93,36 @@ export class NotificationsService {
         return;
       }
 
-      const link = this.notificationLink(notification);
-      const frontendUrl = this.configService.get<string>('app.frontendUrl');
-      const html = renderNotificationEmail({
-        recipientName: user.fullName,
-        title: notification.title,
-        body: notification.body,
-        actionUrl: link ? `${frontendUrl}${link.path}` : undefined,
-        actionLabel: link?.label,
-      });
-
+      const html = this.renderEmail(user.fullName, notification);
       await this.mailService.send(user.email, notification.title, html);
     } catch (err) {
       this.logger.error(`Failed to email notification ${notification.id}`, err as Error);
     }
   }
 
+  private renderEmail(
+    recipientName: string,
+    notification: Pick<Notification, 'type' | 'title' | 'body' | 'metadata'>,
+  ): string {
+    const link = this.notificationLink(notification);
+    const frontendUrl = this.configService.get<string>('app.frontendUrl');
+    return renderNotificationEmail({
+      recipientName,
+      title: notification.title,
+      body: notification.body,
+      actionUrl: link ? `${frontendUrl}${link.path}` : undefined,
+      actionLabel: link?.label,
+    });
+  }
+
   /** Mirrors the frontend's `notificationHref`, so the email opens the same page the bell does. */
-  private notificationLink(notification: Notification): { path: string; label: string } | null {
+  private notificationLink(
+    notification: Pick<Notification, 'type' | 'metadata'>,
+  ): { path: string; label: string } | null {
+    // A new store waiting for approval goes to the admin approval queue.
+    if (notification.type === STORE_SUBMITTED_NOTIFICATION) {
+      return { path: '/admin/stores', label: 'Review store' };
+    }
     const orderId = notification.metadata?.orderId;
     if (typeof orderId === 'string') {
       return { path: `/account/orders/${orderId}`, label: 'View order' };

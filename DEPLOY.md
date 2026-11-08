@@ -55,8 +55,14 @@ Set `CORS_ORIGINS` / `FRONTEND_URL` to the frontend's real domain, and point the
 
 ## 3. Start
 
+Choose how the API is reached from the internet:
+
+- `--profile caddy`: the server has its own public IPv4 with ports 80/443. Caddy gets the HTTPS certificate.
+- `--profile tunnel`: NAT VPS (shared "Host IP", SSH on an odd port) or no public IPv4. Uses Cloudflare
+  Tunnel and needs `CLOUDFLARE_TUNNEL_TOKEN`; the domain's DNS must be on Cloudflare.
+
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+docker compose -f docker-compose.prod.yml --env-file .env.production --profile tunnel up -d --build
 docker compose -f docker-compose.prod.yml --env-file .env.production ps     # all "healthy"
 curl https://<API_DOMAIN>/api/v1/health
 ```

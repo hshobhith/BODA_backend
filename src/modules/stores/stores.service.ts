@@ -10,6 +10,10 @@ import { nanoid } from 'nanoid';
 import slugify from 'slugify';
 import { PaginatedResult, paginate } from '../../common/utils/paginate.util';
 import {
+  NotificationsService,
+  STORE_SUBMITTED_NOTIFICATION,
+} from '../notifications/notifications.service';
+import {
   LICENSED_STORE_TYPES,
   Store,
   StoreApprovalStatus,
@@ -46,6 +50,7 @@ export class StoresService {
     private readonly deliverySettingsRepository: Repository<StoreDeliverySettings>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -71,7 +76,7 @@ export class StoresService {
       approvalStatus: StoreApprovalStatus.PENDING,
     });
 
-    return this.dataSource.transaction(async (manager) => {
+    const created = await this.dataSource.transaction(async (manager) => {
       const savedStore = await manager.save(Store, store);
       savedStore.deliverySettings = await manager.save(
         StoreDeliverySettings,
@@ -79,6 +84,34 @@ export class StoresService {
       );
       return savedStore;
     });
+
+    // Not awaited: the seller shouldn't wait on emails, and notifyAdmins never throws.
+    void this.notificationsService.notifyAdmins({
+      type: STORE_SUBMITTED_NOTIFICATION,
+      title: `New store waiting for approval: ${created.name}`,
+      body: this.describeNewStore(created),
+      metadata: { storeId: created.id, sellerId },
+    });
+
+    return created;
+  }
+
+  /** One-line summary for the admin "new store" alert. */
+  private describeNewStore(store: Store): string {
+    const typeLabel: Record<StoreType, string> = {
+      [StoreType.RETAIL]: 'Shop',
+      [StoreType.RESTAURANT]: 'Restaurant',
+      [StoreType.PHARMACY]: 'Pharmacy',
+    };
+    const place = [store.city, store.state].filter(Boolean).join(', ');
+    const contact = [store.phone, store.email].filter(Boolean).join(' · ');
+    const what = place ? `${typeLabel[store.storeType]} in ${place}` : typeLabel[store.storeType];
+    return [
+      `${what} has been registered and is waiting for your review.`,
+      contact && `Contact: ${contact}.`,
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
 
   /**

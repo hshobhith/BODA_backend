@@ -1,10 +1,11 @@
-# Production stack for a single VPS: API + Redis behind Caddy (auto HTTPS).
+# Production stack for a single VPS: API + Redis, exposed via Caddy or Cloudflare Tunnel.
 #
-# With a managed database (DATABASE_URL set in .env.production):
-#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+# With a managed database (DATABASE_URL set in .env.production), behind Cloudflare Tunnel:
+#   docker compose -f docker-compose.prod.yml --env-file .env.production --profile tunnel up -d --build
+# (use --profile caddy instead on a server with its own public IPv4)
 #
 # With Postgres running on this server too, add the db file:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.db.yml --env-file .env.production up -d --build
+#   docker compose -f docker-compose.prod.yml -f docker-compose.db.yml --env-file .env.production --profile tunnel up -d --build
 #
 # --env-file is required: Compose reads it both for ${...} substitution below and,
 # via env_file, as the backend's runtime environment. See DEPLOY.md.
@@ -25,6 +26,8 @@ services:
     env_file: .env.production
     environment:
       NODE_ENV: production
+      # Fixed here (overrides .env.production): Caddy and the tunnel route both target backend:4000.
+      PORT: 4000
       TRUST_PROXY: "true"
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -33,7 +36,7 @@ services:
     volumes:
       - uploads:/app/uploads
       - private_uploads:/app/private-uploads
-    # Not published to the host: only Caddy reaches it on the internal network.
+    # Not published to the host: only Caddy/cloudflared reach it on the internal network.
     expose:
       - "4000"
     depends_on:
@@ -64,7 +67,12 @@ services:
     mem_limit: 192m
     logging: *logging
 
+  # Pick ONE way of exposing the API with --profile:
+  #   caddy  — server has its own public IPv4 with ports 80/443 (Caddy does HTTPS)
+  #   tunnel — NAT VPS / no public IPv4 (Cloudflare Tunnel; no inbound ports needed)
+
   caddy:
+    profiles: ["caddy"]
     image: caddy:2-alpine
     restart: unless-stopped
     ports:
@@ -72,11 +80,24 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env.production}
+      API_DOMAIN: ${API_DOMAIN:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    depends_on:
+      - backend
+    mem_limit: 128m
+    logging: *logging
+
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # In the Cloudflare tunnel's Public Hostname, point the domain at http://backend:4000.
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       - backend
     mem_limit: 128m
