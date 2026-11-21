@@ -1,9 +1,22 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser, CurrentUserPayload } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/enums/role.enum';
+import { AuditLogInterceptor } from '../audit-log/audit-log.interceptor';
 import { StoresService } from './stores.service';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
@@ -13,7 +26,11 @@ import { UpdateStoreStatusDto } from './dto/update-status.dto';
 import { NearbyQueryDto } from './dto/nearby-query.dto';
 import { SearchStoreDto } from './dto/search-store.dto';
 
+/** Audit only admin edits on the shared seller/admin store routes; the store id is the `storeId` query param. */
+const ADMIN_STORE_EDIT = { roles: [Role.ADMIN], idParam: 'storeId' };
+
 @ApiTags('stores')
+@UseInterceptors(AuditLogInterceptor)
 @Controller('stores')
 export class StoresController {
   constructor(private readonly storesService: StoresService) {}
@@ -75,14 +92,26 @@ export class StoresController {
    * Omitting it falls back to the seller's earliest-created store, which
    * keeps single-store callers (and any client not yet passing `storeId`)
    * working unchanged.
+   *
+   * Admins may call the same endpoints to manage any store on its owner's
+   * behalf (stores an admin set up for a seller, see `POST /admin/stores`);
+   * for them `storeId` is required. Callers then pass `store.sellerId` on to
+   * the service's ownership checks — for a seller that's their own id,
+   * already verified here.
    */
   private resolveMineStore(user: CurrentUserPayload, storeId?: string) {
+    if (user.role === Role.ADMIN) {
+      if (!storeId) {
+        throw new BadRequestException('storeId is required when an admin manages a store');
+      }
+      return this.storesService.findById(storeId);
+    }
     return storeId
       ? this.storesService.findMineById(storeId, user.id)
       : this.storesService.findMine(user.id);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get('me/store')
   @ApiOperation({ summary: "Get one of the current seller's stores (defaults to the first)" })
@@ -92,9 +121,10 @@ export class StoresController {
     return this.resolveMineStore(user, storeId);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Patch('me/store')
+  @Audit('store.admin-update', 'store', ADMIN_STORE_EDIT)
   @ApiOperation({ summary: "Update one of the current seller's stores" })
   @ApiResponse({ status: 200, description: 'Store updated' })
   @ApiResponse({ status: 403, description: 'Not the store owner' })
@@ -105,10 +135,10 @@ export class StoresController {
     @Query('storeId') storeId?: string,
   ) {
     const store = await this.resolveMineStore(user, storeId);
-    return this.storesService.update(store.id, user.id, dto);
+    return this.storesService.update(store.id, store.sellerId, dto);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get('me/store/working-hours')
   @ApiOperation({ summary: "Get one of the current seller's store working hours" })
@@ -121,9 +151,10 @@ export class StoresController {
     return this.storesService.getWorkingHours(store.id);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Put('me/store/working-hours')
+  @Audit('store.admin-update-hours', 'store', ADMIN_STORE_EDIT)
   @ApiOperation({ summary: "Replace one of the current seller's store working hours" })
   @ApiResponse({ status: 200, description: 'Working hours updated' })
   async updateMyWorkingHours(
@@ -132,12 +163,13 @@ export class StoresController {
     @Query('storeId') storeId?: string,
   ) {
     const store = await this.resolveMineStore(user, storeId);
-    return this.storesService.upsertWorkingHours(store.id, user.id, dto);
+    return this.storesService.upsertWorkingHours(store.id, store.sellerId, dto);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Put('me/store/delivery-settings')
+  @Audit('store.admin-update-delivery', 'store', ADMIN_STORE_EDIT)
   @ApiOperation({ summary: "Update one of the current seller's delivery settings" })
   @ApiResponse({ status: 200, description: 'Delivery settings updated' })
   async updateMyDeliverySettings(
@@ -146,12 +178,13 @@ export class StoresController {
     @Query('storeId') storeId?: string,
   ) {
     const store = await this.resolveMineStore(user, storeId);
-    return this.storesService.upsertDeliverySettings(store.id, user.id, dto);
+    return this.storesService.upsertDeliverySettings(store.id, store.sellerId, dto);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Patch('me/store/status')
+  @Audit('store.admin-set-status', 'store', ADMIN_STORE_EDIT)
   @ApiOperation({ summary: 'Manually toggle a store open/closed/vacation status' })
   @ApiResponse({ status: 200, description: 'Store status updated' })
   async updateMyStatus(
@@ -160,7 +193,7 @@ export class StoresController {
     @Query('storeId') storeId?: string,
   ) {
     const store = await this.resolveMineStore(user, storeId);
-    return this.storesService.setStatus(store.id, user.id, dto.status);
+    return this.storesService.setStatus(store.id, store.sellerId, dto.status);
   }
 
   @Roles(Role.SELLER)

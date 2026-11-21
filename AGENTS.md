@@ -46,6 +46,9 @@ these per-module:
    reject, suspend, delete...) so it shows up in the audit log. It fires on success only, reads
    `entityId` from `request.params.id`, and falls back to the controller's first `@ApiTags()` value
    for `entityType` if you don't pass one.
+   On routes shared with sellers, pass `{ roles: [Role.ADMIN] }` to log only admin calls, and
+   `idParam` when the id isn't `params.id` (e.g. the `storeId` query param). These routes'
+   controllers must add `@UseInterceptors(AuditLogInterceptor)` themselves.
 
 ## Module shape
 
@@ -80,6 +83,15 @@ fail to boot in a way that's hard to trace back to a missing env var.
   `approvalStatus: approved` + `isVerified: true`). Approval does **not** flip `status` to `open` —
   that's a separate seller action (`PATCH /stores/me/store/status`). If a seller reports "my store
   doesn't show up," check both fields, not just one.
+- **Admin-created stores** (`POST /admin/stores`): an admin sets up a store for a seller by email.
+  It is owned by that seller's `User` from the start — an existing seller, a customer upgraded to
+  seller, or a new passwordless seller account (`AuthService.findOrCreateSellerForStore`) that the
+  real person claims by signing in with Google under that email. So nothing downstream needs to know
+  an admin made it. It starts `approved` but `closed`. Admins then fill it in through the *seller*
+  store/product endpoints: those accept `Role.ADMIN` and act for the store's owner (`storeId` is
+  required on `me/store*`; see `StoresController.resolveMineStore` and
+  `ProductsService.actingSellerIdFor*`). Keep that in mind when adding a seller endpoint the admin
+  "manage store" screen will call.
 - **Integrity rules live in the database too** (migration `AddDataIntegrityConstraints`, declared with
   `@Check` / partial `@Index` on the entities so `migration:generate` stays in sync): non-negative
   money and stock, positive quantities, JSONB columns must be arrays, restaurant/pharmacy stores need

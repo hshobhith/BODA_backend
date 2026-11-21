@@ -36,6 +36,11 @@ export interface NearbyStoreResult extends StoreWithLiveStatus {
   distanceKm: number;
 }
 
+export interface AdminStoreListItem extends Omit<Store, 'seller'> {
+  /** `hasSignedIn` is false while an admin-invited seller hasn't claimed the account yet. */
+  seller: { id: string; fullName: string; email: string; hasSignedIn: boolean } | null;
+}
+
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -65,25 +70,7 @@ export class StoresService {
    * when `deliverySettings` is entirely absent.
    */
   async create(sellerId: string, dto: CreateStoreDto): Promise<Store> {
-    this.assertLicence(dto.storeType ?? StoreType.RETAIL, dto.licenseInfo);
-    const slug = await this.generateUniqueSlug(dto.name);
-
-    const store = this.storesRepository.create({
-      ...dto,
-      sellerId,
-      slug,
-      status: StoreStatus.CLOSED,
-      approvalStatus: StoreApprovalStatus.PENDING,
-    });
-
-    const created = await this.dataSource.transaction(async (manager) => {
-      const savedStore = await manager.save(Store, store);
-      savedStore.deliverySettings = await manager.save(
-        StoreDeliverySettings,
-        manager.create(StoreDeliverySettings, { storeId: savedStore.id }),
-      );
-      return savedStore;
-    });
+    const created = await this.insertStore(sellerId, dto, StoreApprovalStatus.PENDING);
 
     // Not awaited: the seller shouldn't wait on emails, and notifyAdmins never throws.
     void this.notificationsService.notifyAdmins({
@@ -94,6 +81,42 @@ export class StoresService {
     });
 
     return created;
+  }
+
+  /**
+   * A store an admin sets up on a seller's behalf (`POST /admin/stores`).
+   * The admin has vetted it already, so it starts approved — but still
+   * `closed`, like every new store, until the seller (or admin) opens it.
+   */
+  async createForSellerByAdmin(sellerId: string, dto: CreateStoreDto): Promise<Store> {
+    return this.insertStore(sellerId, dto, StoreApprovalStatus.APPROVED);
+  }
+
+  private async insertStore(
+    sellerId: string,
+    dto: CreateStoreDto,
+    approvalStatus: StoreApprovalStatus,
+  ): Promise<Store> {
+    this.assertLicence(dto.storeType ?? StoreType.RETAIL, dto.licenseInfo);
+    const slug = await this.generateUniqueSlug(dto.name);
+
+    const store = this.storesRepository.create({
+      ...dto,
+      sellerId,
+      slug,
+      status: StoreStatus.CLOSED,
+      approvalStatus,
+      isVerified: approvalStatus === StoreApprovalStatus.APPROVED,
+    });
+
+    return this.dataSource.transaction(async (manager) => {
+      const savedStore = await manager.save(Store, store);
+      savedStore.deliverySettings = await manager.save(
+        StoreDeliverySettings,
+        manager.create(StoreDeliverySettings, { storeId: savedStore.id }),
+      );
+      return savedStore;
+    });
   }
 
   /** One-line summary for the admin "store waiting for approval" alert. */
@@ -471,6 +494,50 @@ export class StoresService {
       take: limit,
     });
     return paginate(stores, total, page, limit);
+  }
+
+  /**
+   * Every store, any approval status, with its owner's basic details — the
+   * admin "All stores" list. `seller.hasSignedIn` is false for a store an
+   * admin set up for an email whose owner hasn't accepted the invite yet
+   * (no password set, no Google account linked).
+   */
+  async listAllForAdmin(
+    page: number,
+    limit: number,
+    filters: { search?: string; approvalStatus?: StoreApprovalStatus } = {},
+  ): Promise<PaginatedResult<AdminStoreListItem>> {
+    const qb = this.storesRepository
+      .createQueryBuilder('store')
+      .leftJoin('store.seller', 'seller')
+      .addSelect(['seller.id', 'seller.fullName', 'seller.email', 'seller.passwordHash', 'seller.googleId'])
+      .orderBy('store.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (filters.approvalStatus) {
+      qb.andWhere('store.approvalStatus = :approvalStatus', { approvalStatus: filters.approvalStatus });
+    }
+    const term = filters.search?.trim();
+    if (term) {
+      qb.andWhere('(store.name ILIKE :term OR store.city ILIKE :term OR seller.email ILIKE :term)', {
+        term: `%${term}%`,
+      });
+    }
+
+    const [stores, total] = await qb.getManyAndCount();
+    const data: AdminStoreListItem[] = stores.map(({ seller, ...store }) => ({
+      ...store,
+      seller: seller
+        ? {
+            id: seller.id,
+            fullName: seller.fullName,
+            email: seller.email,
+            hasSignedIn: Boolean(seller.passwordHash || seller.googleId),
+          }
+        : null,
+    }));
+    return paginate(data, total, page, limit);
   }
 
   async countByStoreType(storeType: StoreType): Promise<number> {

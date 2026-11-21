@@ -6,8 +6,10 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  ParseUUIDPipe,
   Param,
   Patch,
+  Post,
   Query,
   UseInterceptors,
 } from '@nestjs/common';
@@ -21,6 +23,8 @@ import { RejectStoreDto } from '../stores/dto/reject-store.dto';
 import { QueryOrdersDto } from '../orders/dto/query-orders.dto';
 import { QueryAdminUsersDto } from './dto/query-admin-users.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+import { QueryAdminStoresDto } from './dto/query-admin-stores.dto';
+import { AdminCreateStoreDto } from './dto/admin-create-store.dto';
 import { AdminService } from './admin.service';
 
 @ApiTags('admin')
@@ -108,6 +112,44 @@ export class AdminController {
   @ApiResponse({ status: 200, description: 'Paginated list of pending stores' })
   async listPendingStores(@Query() query: QueryOrdersDto) {
     return this.adminService.listPendingStores(query.page ?? 1, query.limit ?? 20);
+  }
+
+  @Get('stores')
+  @ApiOperation({ summary: 'List every store (any approval status) with its seller' })
+  @ApiResponse({ status: 200, description: 'Paginated list of stores, newest first' })
+  async listAllStores(@Query() query: QueryAdminStoresDto) {
+    return this.adminService.listAllStores(query);
+  }
+
+  @Post('stores')
+  @Audit('store.admin-create', 'store')
+  @ApiOperation({
+    summary: 'Set up a store for a seller, by their email',
+    description:
+      'Creates an approved (but closed) store owned by the seller with `sellerEmail`. If no account uses that email, a seller account is created and emailed a link to set its password; a customer account is upgraded to seller. When the seller signs in, the store is theirs to manage like any other. Add hours, delivery settings and products through the seller endpoints, passing `storeId`.',
+  })
+  @ApiResponse({ status: 201, description: 'Store created' })
+  @ApiResponse({ status: 400, description: 'Email belongs to an admin, suspended or deleted account' })
+  async createStore(@Body() dto: AdminCreateStoreDto) {
+    return this.adminService.createStoreForSeller(dto);
+  }
+
+  // Declared after `stores/pending` so that path isn't read as an id.
+  @Get('stores/:id')
+  @ApiOperation({ summary: 'Get one store (any approval status) with its seller' })
+  @ApiResponse({ status: 200, description: 'The store' })
+  @ApiResponse({ status: 404, description: 'Store not found' })
+  async getStore(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.getStore(id);
+  }
+
+  @Post('stores/:id/resend-invite')
+  @Audit('store.resend-seller-invite', 'store')
+  @ApiOperation({ summary: "Re-send the set-password email to a store's not-yet-signed-in seller" })
+  @ApiResponse({ status: 201, description: 'Invite sent' })
+  @ApiResponse({ status: 400, description: 'The seller has already signed in' })
+  async resendSellerInvite(@Param('id', ParseUUIDPipe) id: string) {
+    return this.adminService.resendSellerInvite(id);
   }
 
   @Patch('stores/:id/approve')

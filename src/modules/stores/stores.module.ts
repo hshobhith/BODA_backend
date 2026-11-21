@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AuditLogModule } from '../audit-log/audit-log.module';
 import { StoresController } from './stores.controller';
 import { StoresService } from './stores.service';
 import { Store } from './entities/store.entity';
@@ -11,6 +12,7 @@ import { StoreDeliverySettings } from './entities/store-delivery-settings.entity
   imports: [
     TypeOrmModule.forFeature([Store, StoreWorkingHours, StoreDeliverySettings]),
     NotificationsModule,
+    AuditLogModule,
   ],
   controllers: [StoresController],
   providers: [StoresService],

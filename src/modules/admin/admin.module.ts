@@ -6,6 +6,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ReviewsModule } from '../reviews/reviews.module';
+import { AuthModule } from '../auth/auth.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 
@@ -18,6 +19,7 @@ import { AdminService } from './admin.service';
     AuditLogModule,
     NotificationsModule,
     ReviewsModule,
+    AuthModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

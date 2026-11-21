@@ -14,7 +14,23 @@ import { Order } from '../orders/entities/order.entity';
 import { OrderStatus } from '../../common/enums/order-status.enum';
 import { QueryOrdersDto } from '../orders/dto/query-orders.dto';
 import { QueryAdminUsersDto } from './dto/query-admin-users.dto';
+import { QueryAdminStoresDto } from './dto/query-admin-stores.dto';
+import { AdminCreateStoreDto } from './dto/admin-create-store.dto';
 import { CurrentUserPayload } from '../../common/decorators/current-user.decorator';
+import { AuthService } from '../auth/auth.service';
+import { AdminStoreListItem } from '../stores/stores.service';
+
+export interface AdminCreatedStore extends Store {
+  /** What happened to the seller account the store was given to. */
+  sellerAccount: {
+    id: string;
+    email: string;
+    /** Account not claimed yet; the seller was emailed to sign in with Google. */
+    invited: boolean;
+    /** Existing customer account, now a seller. */
+    upgraded: boolean;
+  };
+}
 
 export interface AdminAnalyticsOverview {
   users: {
@@ -51,6 +67,7 @@ export class AdminService {
     private readonly ordersService: OrdersService,
     private readonly notificationsService: NotificationsService,
     private readonly reviewsService: ReviewsService,
+    private readonly authService: AuthService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -100,6 +117,81 @@ export class AdminService {
 
   async listPendingStores(page: number, limit: number): Promise<PaginatedResult<Store>> {
     return this.storesService.listPendingApprovals(page, limit);
+  }
+
+  async listAllStores(query: QueryAdminStoresDto): Promise<PaginatedResult<AdminStoreListItem>> {
+    return this.storesService.listAllForAdmin(query.page ?? 1, query.limit ?? 20, {
+      search: query.search,
+      approvalStatus: query.approvalStatus,
+    });
+  }
+
+  /**
+   * Sets up a store for a seller, identified by email. The store belongs to
+   * that seller's account from the start (created and invited if it doesn't
+   * exist yet — see `AuthService.findOrCreateSellerForStore`), so when they
+   * sign in with that email they see and manage it exactly like a store they
+   * registered themselves. It starts approved; the admin can keep filling in
+   * hours, delivery and products through the seller endpoints with `storeId`.
+   */
+  async createStoreForSeller(dto: AdminCreateStoreDto): Promise<AdminCreatedStore> {
+    const { sellerEmail, sellerName, sellerPhone, ...storeDto } = dto;
+    const account = await this.authService.findOrCreateSellerForStore({
+      email: sellerEmail,
+      fullName: sellerName,
+      phone: sellerPhone,
+    });
+    const store = await this.storesService.createForSellerByAdmin(account.user.id, storeDto);
+
+    // An account nobody has claimed yet (new, or invited earlier for another
+    // store) is emailed to sign in with Google; a real seller gets a notification.
+    const invited = this.authService.isUnclaimedInvite(account.user);
+    if (invited) {
+      await this.authService.sendSellerInvite(account.user, store.name);
+    } else {
+      await this.notifySeller(
+        store,
+        'store.created-by-admin',
+        `${store.name} has been added to your account`,
+        'BODA has set up this store for you. Find it in your seller dashboard — you can edit its details, hours, delivery settings and products there.',
+      );
+    }
+
+    return {
+      ...store,
+      sellerAccount: {
+        id: account.user.id,
+        email: account.user.email,
+        invited,
+        upgraded: account.upgraded,
+      },
+    };
+  }
+
+  /** One store, any approval status, with its seller — the admin "manage store" header. */
+  async getStore(id: string): Promise<AdminStoreListItem> {
+    const store = await this.storesService.findById(id);
+    const seller = await this.usersService.findById(store.sellerId);
+    return {
+      ...store,
+      seller: {
+        id: seller.id,
+        fullName: seller.fullName,
+        email: seller.email,
+        hasSignedIn: !this.authService.isUnclaimedInvite(seller),
+      },
+    };
+  }
+
+  /** Re-sends the "your store is ready" email to a seller who hasn't signed in yet. */
+  async resendSellerInvite(storeId: string): Promise<{ sent: true; email: string }> {
+    const store = await this.storesService.findById(storeId);
+    const seller = await this.usersService.findById(store.sellerId);
+    if (!this.authService.isUnclaimedInvite(seller)) {
+      throw new BadRequestException('This seller has already signed in — no invite needed.');
+    }
+    await this.authService.sendSellerInvite(seller, store.name);
+    return { sent: true, email: seller.email };
   }
 
   async approveStore(id: string): Promise<Store> {

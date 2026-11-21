@@ -1,9 +1,21 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Audit } from '../../common/decorators/audit.decorator';
 import { CurrentUser, CurrentUserPayload } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/enums/role.enum';
+import { AuditLogInterceptor } from '../audit-log/audit-log.interceptor';
 import { ProductsService } from './products.service';
 import { BarcodeLookupService } from './barcode-lookup.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -12,7 +24,17 @@ import { DuplicateProductDto } from './dto/duplicate-product.dto';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 
+/** On routes shared with sellers, only an admin's edits go in the audit log. */
+const ADMIN_ONLY = { roles: [Role.ADMIN] };
+
+/**
+ * Seller product management. Admins can use the same routes to manage any
+ * store's catalogue on its owner's behalf (stores an admin set up for a
+ * seller, see `POST /admin/stores`): `actingSellerIdFor*` turns an admin
+ * caller into the owning seller's id for the service's ownership checks.
+ */
 @ApiTags('products')
+@UseInterceptors(AuditLogInterceptor)
 @Controller('products')
 export class ProductsController {
   constructor(
@@ -46,7 +68,7 @@ export class ProductsController {
   // lookup).
   // -----------------------------------------------------------------
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get('barcode/:code')
   @ApiOperation({
@@ -61,119 +83,142 @@ export class ProductsController {
     @Param('code') code: string,
     @Query('storeId', new ParseUUIDPipe({ optional: true })) storeId?: string,
   ) {
-    return this.barcodeLookupService.lookup(code, user.id, storeId);
+    const sellerId = storeId
+      ? await this.productsService.actingSellerIdForStore(user, storeId)
+      : user.id;
+    return this.barcodeLookupService.lookup(code, sellerId, storeId);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Post('store/:storeId')
+  @Audit('product.admin-create', 'product', ADMIN_ONLY)
   @ApiOperation({ summary: 'Create a new product for the current seller store' })
   @ApiResponse({ status: 201, description: 'Product created' })
   @ApiResponse({ status: 403, description: 'Not the store owner' })
   async create(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('storeId') storeId: string,
+    @Param('storeId', ParseUUIDPipe) storeId: string,
     @Body() dto: CreateProductDto,
   ) {
-    return this.productsService.create(user.id, storeId, dto);
+    const sellerId = await this.productsService.actingSellerIdForStore(user, storeId);
+    return this.productsService.create(sellerId, storeId, dto);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get('mine/store/:storeId')
   @ApiOperation({ summary: "Seller's own product listing (all statuses)" })
   @ApiResponse({ status: 200, description: 'Paginated list of products' })
   async findMine(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('storeId') storeId: string,
+    @Param('storeId', ParseUUIDPipe) storeId: string,
     @Query() query: QueryProductsDto,
   ) {
-    return this.productsService.findMine(user.id, storeId, query);
+    const sellerId = await this.productsService.actingSellerIdForStore(user, storeId);
+    return this.productsService.findMine(sellerId, storeId, query);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get('mine/:id')
   @ApiOperation({ summary: "Seller's own product detail regardless of status" })
   @ApiResponse({ status: 200, description: 'The product' })
   @ApiResponse({ status: 403, description: 'Not the product owner' })
   @ApiResponse({ status: 404, description: 'Product not found' })
-  async findMineById(@CurrentUser() user: CurrentUserPayload, @Param('id') id: string) {
-    return this.productsService.findMineById(id, user.id);
+  async findMineById(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const sellerId = await this.productsService.actingSellerIdForProduct(user, id);
+    return this.productsService.findMineById(id, sellerId);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Patch(':id')
+  @Audit('product.admin-update', 'product', ADMIN_ONLY)
   @ApiOperation({ summary: 'Update a product (owner only)' })
   @ApiResponse({ status: 200, description: 'Product updated' })
   @ApiResponse({ status: 403, description: 'Not the product owner' })
   async update(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateProductDto,
   ) {
-    return this.productsService.update(id, user.id, dto);
+    const sellerId = await this.productsService.actingSellerIdForProduct(user, id);
+    return this.productsService.update(id, sellerId, dto);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Patch(':id/archive')
+  @Audit('product.admin-archive', 'product', ADMIN_ONLY)
   @ApiOperation({ summary: 'Archive a product (owner only)' })
   @ApiResponse({ status: 200, description: 'Product archived' })
-  async archive(@CurrentUser() user: CurrentUserPayload, @Param('id') id: string) {
-    return this.productsService.archive(id, user.id);
+  async archive(@CurrentUser() user: CurrentUserPayload, @Param('id', ParseUUIDPipe) id: string) {
+    const sellerId = await this.productsService.actingSellerIdForProduct(user, id);
+    return this.productsService.archive(id, sellerId);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Post(':id/duplicate')
+  @Audit('product.admin-duplicate', 'product', ADMIN_ONLY)
   @ApiOperation({ summary: 'Duplicate a product with a new slug (owner only)' })
   @ApiResponse({ status: 201, description: 'Duplicated product' })
   async duplicate(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: DuplicateProductDto,
   ) {
-    return this.productsService.duplicate(id, user.id, dto);
+    const sellerId = await this.productsService.actingSellerIdForProduct(user, id);
+    return this.productsService.duplicate(id, sellerId, dto);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Patch(':id/adjust-stock')
+  @Audit('product.admin-adjust-stock', 'product', ADMIN_ONLY)
   @ApiOperation({ summary: 'Manually adjust stock for a product or variant (owner only)' })
   @ApiResponse({ status: 200, description: 'Stock adjusted' })
   @ApiResponse({ status: 400, description: 'Resulting quantity would be negative' })
   async adjustStock(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AdjustStockDto,
   ) {
-    await this.productsService.manualAdjustStock(id, user.id, dto);
+    const sellerId = await this.productsService.actingSellerIdForProduct(user, id);
+    await this.productsService.manualAdjustStock(id, sellerId, dto);
     return { success: true };
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get('store/:storeId/low-stock')
   @ApiOperation({ summary: 'List products/variants at or below their low-stock threshold' })
   @ApiResponse({ status: 200, description: 'List of low-stock products' })
-  async lowStock(@CurrentUser() user: CurrentUserPayload, @Param('storeId') storeId: string) {
-    return this.productsService.findLowStock(storeId, user.id);
+  async lowStock(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('storeId', ParseUUIDPipe) storeId: string,
+  ) {
+    const sellerId = await this.productsService.actingSellerIdForStore(user, storeId);
+    return this.productsService.findLowStock(storeId, sellerId);
   }
 
-  @Roles(Role.SELLER)
+  @Roles(Role.SELLER, Role.ADMIN)
   @ApiBearerAuth()
   @Get(':id/inventory-history')
   @ApiOperation({ summary: 'Paginated inventory history for a product (owner only)' })
   @ApiResponse({ status: 200, description: 'Paginated inventory history' })
   async inventoryHistory(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    return this.productsService.getInventoryHistory(id, user.id, Number(page) || 1, Number(limit) || 20);
+    const sellerId = await this.productsService.actingSellerIdForProduct(user, id);
+    return this.productsService.getInventoryHistory(id, sellerId, Number(page) || 1, Number(limit) || 20);
   }
 
   // -----------------------------------------------------------------

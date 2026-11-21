@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { StoresModule } from '../stores/stores.module';
 import { CategoriesModule } from '../categories/categories.module';
 import { UploadsModule } from '../uploads/uploads.module';
+import { AuditLogModule } from '../audit-log/audit-log.module';
 import { ProductsController } from './products.controller';
 import { ProductsService } from './products.service';
 import { BarcodeLookupService } from './barcode-lookup.service';
@@ -18,6 +19,7 @@ import { InventoryHistory } from './entities/inventory-history.entity';
     StoresModule,
     CategoriesModule,
     UploadsModule,
+    AuditLogModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService, BarcodeLookupService],

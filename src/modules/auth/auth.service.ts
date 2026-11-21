@@ -15,6 +15,7 @@ import { nanoid } from 'nanoid';
 import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { Role } from '../../common/enums/role.enum';
 import { MailService } from '../mail/mail.service';
+import { escapeHtml } from '../../common/utils/escape-html.util';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -30,6 +31,18 @@ const BCRYPT_SALT_ROUNDS = 10;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DELETED_ACCOUNT_MESSAGE = 'This account has been deleted. Please contact support if you think this is a mistake.';
+const INVITED_ACCOUNT_MESSAGE =
+  'BODA has already set up a seller account for this email. Sign in with Google using this email address to manage your store.';
+const INVITED_ACCOUNT_LOGIN_MESSAGE =
+  'Your BODA seller account is ready but has no password. Sign in with Google using this email address, or use "Forgot password" to set one.';
+
+export interface SellerAccountResult {
+  user: User;
+  /** A new, unclaimed account was created — the caller sends the invite (`sendSellerInvite`). */
+  created: boolean;
+  /** An existing customer account was upgraded to seller. */
+  upgraded: boolean;
+}
 
 export interface TokenPair {
   accessToken: string;
@@ -128,12 +141,16 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<{ user: Partial<User>; tokens: TokenPair }> {
-    const existing = await this.usersRepository.findOne({
-      where: { email: dto.email },
-      withDeleted: true,
-    });
+    // Case-insensitive, so "Ravi@x.com" can't open a second account beside an
+    // invited "ravi@x.com" (the unique index on email is case-sensitive).
+    const existing = await this.findByEmailInsensitive(dto.email);
     if (existing?.deletedAt) {
       throw new ForbiddenException(DELETED_ACCOUNT_MESSAGE);
+    }
+    if (existing && this.isUnclaimedInvite(existing)) {
+      // Setting a password here would let anyone who types the address take
+      // over the store an admin set up; Google sign-in proves they own the inbox.
+      throw new ConflictException(INVITED_ACCOUNT_MESSAGE);
     }
     if (existing) {
       throw new ConflictException('An account with this email already exists');
@@ -181,8 +198,118 @@ export class AuthService {
     return { user: this.stripSensitive(savedUser), tokens };
   }
 
+  // ---------------------------------------------------------------------
+  // Admin-created seller accounts (POST /admin/stores)
+  // ---------------------------------------------------------------------
+
+  /**
+   * The seller account a store an admin sets up should belong to, by email:
+   *
+   * - an existing seller → used as-is;
+   * - an existing customer → upgraded to seller (same one-way upgrade as
+   *   `becomeSeller`); their current session picks up the new role on its
+   *   next token refresh or sign-in;
+   * - no account → one is created with no password; the caller emails an
+   *   invite (`sendSellerInvite`). The seller claims it by signing in with
+   *   Google under that address (`googleSignIn` links by verified email).
+   *
+   * Admin, suspended and deleted accounts are refused. Only whoever controls
+   * the inbox can claim the account, so typing the address into the
+   * email/password register form can't hijack the store (see `register`).
+   */
+  async findOrCreateSellerForStore(input: {
+    email: string;
+    fullName?: string;
+    phone?: string;
+  }): Promise<SellerAccountResult> {
+    const email = input.email.trim().toLowerCase();
+    const existing = await this.findByEmailInsensitive(email);
+
+    if (existing?.deletedAt) {
+      throw new BadRequestException('This email belongs to a deleted account and cannot own a store.');
+    }
+    if (existing?.role === Role.ADMIN) {
+      throw new BadRequestException('This email belongs to an admin account. Use a seller email instead.');
+    }
+    if (existing?.status === UserStatus.SUSPENDED) {
+      throw new BadRequestException('This account is suspended. Reinstate it before giving it a store.');
+    }
+
+    if (existing) {
+      const upgraded = existing.role === Role.CUSTOMER;
+      if (upgraded) {
+        existing.role = Role.SELLER;
+        await this.usersRepository.save(existing);
+      }
+      return { user: existing, created: false, upgraded };
+    }
+
+    const fullName = input.fullName?.trim() || email.split('@')[0];
+    let user: User;
+    try {
+      user = await this.usersRepository.save(
+        this.usersRepository.create({
+          email,
+          passwordHash: null,
+          fullName,
+          phone: input.phone || undefined,
+          role: Role.SELLER,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof QueryFailedError && (error as QueryFailedError & { code?: string }).code === '23505') {
+        throw new ConflictException('An account with this email was just created. Please try again.');
+      }
+      throw error;
+    }
+
+    return { user, created: true, upgraded: false };
+  }
+
+  /**
+   * Tells the seller their account and store are ready. Sign-in is
+   * Google-only on the frontend today, so the email sends them to log in with
+   * Google under this address — `googleSignIn` matches the account by
+   * Google-verified email and links it, which is what proves the inbox is
+   * theirs. (`POST /auth/forgot-password` also works for these accounts if
+   * email/password sign-in is switched back on.)
+   */
+  async sendSellerInvite(user: User, storeName?: string): Promise<void> {
+    const frontendUrl = this.configService.get<string>('app.frontendUrl');
+    const link = `${frontendUrl}/auth/login?redirect=${encodeURIComponent('/seller/dashboard')}`;
+    const storeLine = storeName
+      ? `<p>We've set up your store <strong>${escapeHtml(storeName)}</strong> on BODA.</p>`
+      : `<p>A BODA seller account has been set up for you.</p>`;
+
+    try {
+      await this.mailService.send(
+        user.email,
+        'Your BODA seller account is ready',
+        `<p>Hi ${escapeHtml(user.fullName)},</p>${storeLine}<p>To manage it, sign in with Google using this email address (<strong>${escapeHtml(user.email)}</strong>):</p><p><a href="${link}">${link}</a></p><p>Your store's details and products will already be there, and you can change anything from your seller dashboard.</p>`,
+      );
+    } catch (error) {
+      this.logger.error(`Failed to send seller invite email: ${(error as Error).message}`);
+    }
+  }
+
+  /** An account an admin created that its owner hasn't claimed yet: no password, no Google link. */
+  isUnclaimedInvite(user: Pick<User, 'passwordHash' | 'googleId'>): boolean {
+    return !user.passwordHash && !user.googleId;
+  }
+
+  private findByEmailInsensitive(email: string): Promise<User | null> {
+    return this.usersRepository
+      .createQueryBuilder('user')
+      .withDeleted()
+      .where('LOWER(user.email) = LOWER(:email)', { email: email.trim() })
+      .getOne();
+  }
+
   async login(dto: LoginDto): Promise<{ user: Partial<User>; tokens: TokenPair }> {
     const user = await this.usersRepository.findOne({ where: { email: dto.email } });
+    if (user && this.isUnclaimedInvite(user)) {
+      throw new UnauthorizedException(INVITED_ACCOUNT_LOGIN_MESSAGE);
+    }
     // Google-only accounts have no password to check against.
     if (!user || !user.passwordHash) {
       throw new UnauthorizedException('Invalid email or password');

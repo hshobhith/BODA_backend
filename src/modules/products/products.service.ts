@@ -11,6 +11,7 @@ import { nanoid } from 'nanoid';
 import slugify from 'slugify';
 import { v4 as uuidv4 } from 'uuid';
 import { PaginatedResult, paginate } from '../../common/utils/paginate.util';
+import { Role } from '../../common/enums/role.enum';
 import { StoresService } from '../stores/stores.service';
 import { StoreApprovalStatus } from '../stores/entities/store.entity';
 import { storeDistanceKmSql } from '../stores/store-distance';
@@ -560,6 +561,34 @@ export class ProductsService {
   // ---------------------------------------------------------------------
   // Ownership / helpers
   // ---------------------------------------------------------------------
+
+  /**
+   * Whose ownership the seller-management methods should check for this
+   * caller. A seller is checked as themselves; an admin manages any store on
+   * its owner's behalf (stores an admin set up for a seller), so for them
+   * this is the owning seller's id. Throws 404 if the store doesn't exist.
+   */
+  async actingSellerIdForStore(user: { id: string; role: string }, storeId: string): Promise<string> {
+    if (user.role !== Role.ADMIN) {
+      return user.id;
+    }
+    return (await this.storesService.findById(storeId)).sellerId;
+  }
+
+  /** Same as `actingSellerIdForStore`, starting from a product id. */
+  async actingSellerIdForProduct(user: { id: string; role: string }, productId: string): Promise<string> {
+    if (user.role !== Role.ADMIN) {
+      return user.id;
+    }
+    const product = await this.productsRepository.findOne({
+      where: { id: productId },
+      relations: ['store'],
+    });
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    return product.store.sellerId;
+  }
 
   private async assertStoreOwnership(storeId: string, sellerId: string): Promise<void> {
     const store = await this.storesService.findById(storeId);
